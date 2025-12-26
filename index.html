@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>2025 業務績效評核系統</title>
+    <title>2025 業務績效評核系統 (單機版)</title>
+    <!-- 使用 defer 屬性避免阻塞渲染 -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
@@ -18,6 +19,9 @@
         .tab-active { border-bottom: 2px solid #2563eb; color: #2563eb; }
         .tab-inactive { border-bottom: 2px solid transparent; color: #6b7280; }
         .tab-inactive:hover { color: #374151; border-color: #d1d5db; }
+        
+        /* 載入動畫過場效果 */
+        #loading { transition: opacity 0.5s ease-out; }
     </style>
 </head>
 <body class="bg-gray-100 font-sans text-gray-800 pb-20 print:pb-0">
@@ -28,16 +32,22 @@
             <div class="flex justify-between items-center h-16">
                 <div class="flex items-center">
                     <i data-lucide="award" class="h-8 w-8 text-blue-600 mr-2"></i>
-                    <h1 class="text-xl font-bold text-gray-900 hidden sm:block">2025 業務績效評核系統</h1>
+                    <h1 class="text-xl font-bold text-gray-900 hidden sm:block">2025 業務績效評核系統 (單機版)</h1>
                     <h1 class="text-xl font-bold text-gray-900 sm:hidden">2025 績效評核</h1>
                 </div>
                 <div class="flex items-center space-x-4">
+                    <span id="storage-indicator" class="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full flex items-center">
+                        <i data-lucide="hard-drive" class="w-3 h-3 mr-1"></i> 本機儲存
+                    </span>
                     <span id="saveStatus" class="text-xs text-gray-500 hidden md:inline"></span>
                     <button onclick="window.print()" class="p-2 text-gray-600 hover:text-blue-600 transition-colors" title="列印">
                         <i data-lucide="printer" class="h-5 w-5"></i>
                     </button>
                     <button id="btnSave" class="flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md shadow-sm text-sm font-medium transition-all">
                         <i data-lucide="save" class="mr-2 h-4 w-4"></i> 儲存資料
+                    </button>
+                    <button onclick="clearData()" class="p-2 text-red-400 hover:text-red-600 transition-colors" title="清除所有資料">
+                        <i data-lucide="trash-2" class="h-5 w-5"></i>
                     </button>
                 </div>
             </div>
@@ -57,10 +67,10 @@
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 print:p-0 print:max-w-full">
         
         <!-- Loading Spinner -->
-        <div id="loading" class="fixed inset-0 bg-white/80 flex items-center justify-center z-50">
+        <div id="loading" class="fixed inset-0 bg-white/95 flex items-center justify-center z-50 transition-opacity duration-500">
             <div class="text-center">
                 <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
-                <p class="text-gray-600">系統載入中...</p>
+                <p class="text-gray-600 font-medium">系統載入中...</p>
             </div>
         </div>
 
@@ -179,11 +189,7 @@
 
     </main>
 
-    <script type="module">
-        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js';
-        import { getFirestore, doc, setDoc, onSnapshot } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
-
+    <script>
         // --- Data Definitions ---
         const KPI_ITEMS = [
             { category: "工作職能", item: "開發新客戶", desc: "能夠有效識別並開發潛在客戶，創造新商機。", id: "kpi_1" },
@@ -209,6 +215,7 @@
         ];
 
         const MONTHS = Array.from({ length: 12 }, (_, i) => `${i + 1}月`);
+        const STORAGE_KEY = 'performance_review_2025_data';
 
         // --- State ---
         let formData = {
@@ -217,9 +224,6 @@
             interview: {},
             targets: {}
         };
-        let currentUser = null;
-        let db = null;
-        let appId = "performance-html-v1";
 
         // --- UI Rendering ---
         
@@ -276,7 +280,7 @@
             `).join('');
             
             // Re-render Icons
-            lucide.createIcons();
+            if (window.lucide) lucide.createIcons();
         }
 
         // --- Logic & Data Handling ---
@@ -285,22 +289,24 @@
             if (!formData.scores[id]) formData.scores[id] = { score: 3, selfNote: "", helpNote: "" };
             formData.scores[id][field] = value;
             calculateTotal();
+            // Auto save on change for local version
+            debouncedSave();
         };
 
         window.updateInterview = (id, value) => {
             formData.interview[id] = value;
+            debouncedSave();
         };
 
         window.updateTarget = (month, value) => {
             formData.targets[month] = value;
+            debouncedSave();
         };
 
         function calculateTotal() {
             let sum = 0;
             let count = 0;
             KPI_ITEMS.forEach(item => {
-                // Default to 3 if not set in DOM but we initialize logic to 3
-                // However, formData might be empty initially
                 const val = formData.scores[item.id]?.score || 3;
                 sum += parseInt(val);
                 count++;
@@ -363,115 +369,97 @@
         ['name', 'title', 'hireDate', 'fillDate'].forEach(field => {
             document.getElementById(`meta-${field}`).addEventListener('change', (e) => {
                 formData.meta[field] = e.target.value;
+                debouncedSave();
             });
         });
 
-        // --- Firebase Init ---
-        async function init() {
-            renderTables(); // Draw HTML first
-            
-            // --- FIREBASE CONFIGURATION ---
-            // 如果您要將此檔案放在 GitHub Pages 或本地運行，請將以下變數替換為您的 Firebase 設定物件
-            // const firebaseConfig = { ... };
-            let firebaseConfig;
-            try {
-                if (typeof __firebase_config !== 'undefined') {
-                    firebaseConfig = JSON.parse(__firebase_config);
-                    appId = typeof __app_id !== 'undefined' ? __app_id : appId;
-                } else {
-                    // Fallback for demo if running locally without environment variables
-                    // You MUST replace this with your own config to make it work locally
-                    console.warn("未檢測到環境變數，請手動設定 firebaseConfig");
-                    return; 
-                }
-            } catch(e) {
-                console.error("Config error", e);
-                return;
-            }
-
-            const app = initializeApp(firebaseConfig);
-            const auth = getAuth(app);
-            db = getFirestore(app);
-
-            // Auth & Load
-            const initAuth = async () => {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            };
-            await initAuth();
-
-            onAuthStateChanged(auth, (user) => {
-                if (user) {
-                    currentUser = user;
-                    document.getElementById('loading').style.display = 'none';
-                    loadData();
-                }
-            });
-        }
-
+        // --- Local Storage Logic ---
         function loadData() {
-            if (!currentUser) return;
-            const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'performance_html_2025');
-            
-            onSnapshot(docRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    const data = docSnap.data();
-                    // Merge
+            try {
+                const saved = localStorage.getItem(STORAGE_KEY);
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    // Merge to ensure structure integrity
                     formData = {
-                        meta: { ...formData.meta, ...data.meta },
-                        scores: { ...formData.scores, ...data.scores },
-                        interview: { ...formData.interview, ...data.interview },
-                        targets: { ...formData.targets, ...data.targets }
+                        meta: { ...formData.meta, ...parsed.meta },
+                        scores: { ...formData.scores, ...parsed.scores },
+                        interview: { ...formData.interview, ...parsed.interview },
+                        targets: { ...formData.targets, ...parsed.targets }
                     };
-                    populateForm();
+                    console.log("Data loaded from local storage");
                 }
-            });
+            } catch (e) {
+                console.error("Failed to load local data", e);
+            }
+            populateForm();
+            
+            // Hide loading
+            const loader = document.getElementById('loading');
+            loader.style.opacity = '0';
+            setTimeout(() => loader.style.display = 'none', 500);
         }
 
-        window.saveData = async () => {
-            if (!currentUser) return;
+        window.saveData = () => {
             const btn = document.getElementById('btnSave');
-            const status = document.getElementById('saveStatus');
-            
             btn.innerHTML = `<div class="animate-spin h-4 w-4 border-2 border-white border-t-transparent rounded-full mr-2"></div> 儲存中...`;
             btn.disabled = true;
 
             try {
-                const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'data', 'performance_html_2025');
-                await setDoc(docRef, formData);
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(formData));
                 
-                status.innerText = `上次儲存: ${new Date().toLocaleTimeString()}`;
+                // Success UI
+                document.getElementById('saveStatus').innerText = `上次儲存: ${new Date().toLocaleTimeString()}`;
                 setTimeout(() => {
                     btn.innerHTML = `<i data-lucide="check" class="mr-2 h-4 w-4"></i> 儲存成功`;
                     btn.classList.replace('bg-blue-600', 'bg-green-600');
                     btn.classList.replace('hover:bg-blue-700', 'hover:bg-green-700');
-                    lucide.createIcons();
-                }, 500);
+                    if (window.lucide) lucide.createIcons();
+                }, 400);
 
                 setTimeout(() => {
                     btn.innerHTML = `<i data-lucide="save" class="mr-2 h-4 w-4"></i> 儲存資料`;
                     btn.classList.replace('bg-green-600', 'bg-blue-600');
                     btn.classList.replace('hover:bg-green-700', 'hover:bg-blue-700');
                     btn.disabled = false;
-                    lucide.createIcons();
+                    if (window.lucide) lucide.createIcons();
                 }, 2000);
-
-            } catch (error) {
-                console.error(error);
-                alert("儲存失敗，請檢查網路連線");
-                btn.innerHTML = `<i data-lucide="save" class="mr-2 h-4 w-4"></i> 儲存資料`;
+            } catch (e) {
+                console.error("Save failed", e);
+                alert("儲存失敗：請檢查瀏覽器設定是否允許 LocalStorage");
                 btn.disabled = false;
-                lucide.createIcons();
+                btn.innerHTML = `<i data-lucide="save" class="mr-2 h-4 w-4"></i> 儲存資料`;
+                if (window.lucide) lucide.createIcons();
             }
         };
 
+        window.clearData = () => {
+            if(confirm('確定要清除所有資料嗎？此動作無法復原。')) {
+                localStorage.removeItem(STORAGE_KEY);
+                location.reload();
+            }
+        }
+
+        // Debounce helper for auto-save
+        let timeout;
+        function debouncedSave() {
+            document.getElementById('saveStatus').innerText = "編輯中...";
+            clearTimeout(timeout);
+            timeout = setTimeout(() => {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(formData));
+                document.getElementById('saveStatus').innerText = "已自動儲存";
+            }, 1000);
+        }
+
         document.getElementById('btnSave').addEventListener('click', window.saveData);
 
-        // Start
-        init();
+        // --- Init ---
+        // Wait a bit for DOM to be super ready and scripts loaded
+        window.addEventListener('DOMContentLoaded', () => {
+            renderTables();
+            // Artificial small delay to make transition smoother
+            setTimeout(loadData, 300);
+        });
+
     </script>
 </body>
 </html>
